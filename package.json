@@ -58,7 +58,7 @@
     "package": "vsce package",
     "publish:vsce": "vsce publish",
     "publish:ovsx": "ovsx publish",
-    "test": "ts-mocha src/**/*.test.ts"
+    "test": "ts-mocha tests/**/*.test.ts"
   },
   "devDependencies": {
     "@types/chai": "^4.3.20",

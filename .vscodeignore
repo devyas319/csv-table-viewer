@@ -4,6 +4,6 @@ out/**/*.map
 src/**
 .gitignore
 tsconfig.json
-**/*.test.ts
+tests/**
 **/*.csv
 node_modules/**
