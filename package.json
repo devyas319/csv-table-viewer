@@ -2,7 +2,7 @@
   "name": "csv-interactive-table-viewer",
   "displayName": "CSV (Interactive Table Viewer)",
   "description": "View CSV files as beautiful, interactive tables with sorting, filtering, and theme support",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "publisher": "devyas319",
   "author": {
     "name": "Dev Vyas"

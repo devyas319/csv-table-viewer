@@ -1,103 +1,138 @@
 import * as vscode from 'vscode';
-import { parseCsv } from './csvParser';
+import { readCsvChunk, ROWS_PER_CHUNK } from './csvParser';
 
 interface CsvDocument extends vscode.CustomDocument {
-    readonly uri: vscode.Uri;
+  readonly uri: vscode.Uri;
+}
+
+interface FileState {
+  headers: string[];
+  nextOffset: number;
+  totalLoaded: number;
+  done: boolean;
 }
 
 export class CsvTableEditorProvider implements vscode.CustomReadonlyEditorProvider<CsvDocument> {
 
-    public static readonly viewType = 'csvTableViewer.view';
+  public static readonly viewType = 'csvTableViewer.view';
+  private fileStates = new Map<string, FileState>();
 
-    constructor(private readonly context: vscode.ExtensionContext) { }
+  constructor(private readonly context: vscode.ExtensionContext) { }
 
-    public static register(context: vscode.ExtensionContext): vscode.Disposable {
-        const provider = new CsvTableEditorProvider(context);
-        return vscode.window.registerCustomEditorProvider(
-            CsvTableEditorProvider.viewType,
-            provider,
-            {
-                webviewOptions: { retainContextWhenHidden: true },
-                supportsMultipleEditorsPerDocument: false,
-            }
-        );
-    }
+  public static register(context: vscode.ExtensionContext): vscode.Disposable {
+    const provider = new CsvTableEditorProvider(context);
+    return vscode.window.registerCustomEditorProvider(
+      CsvTableEditorProvider.viewType,
+      provider,
+      {
+        webviewOptions: { retainContextWhenHidden: true },
+        supportsMultipleEditorsPerDocument: false,
+      }
+    );
+  }
 
-    async openCustomDocument(uri: vscode.Uri): Promise<CsvDocument> {
-        return { uri, dispose: () => { } };
-    }
+  async openCustomDocument(uri: vscode.Uri): Promise<CsvDocument> {
+    return { uri, dispose: () => { } };
+  }
 
-    async resolveCustomEditor(
-        document: CsvDocument,
-        webviewPanel: vscode.WebviewPanel,
-        _token: vscode.CancellationToken
-    ): Promise<void> {
-        webviewPanel.webview.options = {
-            enableScripts: true,
-        };
+  async resolveCustomEditor(
+    document: CsvDocument,
+    webviewPanel: vscode.WebviewPanel,
+    _token: vscode.CancellationToken
+  ): Promise<void> {
+    webviewPanel.webview.options = { enableScripts: true };
+    const stateKey = document.uri.toString();
 
-        const updateWebview = async () => {
-            const content = await vscode.workspace.fs.readFile(document.uri);
-            const text = Buffer.from(content).toString('utf-8');
-            const csvData = parseCsv(text);
-            webviewPanel.webview.html = this.getHtmlForWebview(
-                webviewPanel.webview,
-                csvData.headers,
-                csvData.rows,
-                document.uri
-            );
-        };
-
-        // Watch for file changes
-        const watcher = vscode.workspace.createFileSystemWatcher(
-            new vscode.RelativePattern(document.uri, '*')
-        );
-
-        const changeListener = vscode.workspace.onDidChangeTextDocument((e) => {
-            if (e.document.uri.toString() === document.uri.toString()) {
-                updateWebview();
-            }
+    const loadInitial = async () => {
+      try {
+        const chunk = await readCsvChunk(document.uri.fsPath, 0, ROWS_PER_CHUNK);
+        this.fileStates.set(stateKey, {
+          headers: chunk.headers,
+          nextOffset: chunk.nextOffset,
+          totalLoaded: chunk.rows.length,
+          done: chunk.done,
         });
+        webviewPanel.webview.html = this.getHtmlForWebview(
+          webviewPanel.webview,
+          chunk.headers,
+          chunk.rows,
+          chunk.done,
+          document.uri
+        );
+      } catch (err) {
+        webviewPanel.webview.html = `<body style="padding:20px;font-family:sans-serif;color:#f44;">Error loading CSV: ${err}</body>`;
+      }
+    };
 
-        // Also watch via file system watcher for external changes
-        const fsWatcher = vscode.workspace.createFileSystemWatcher(document.uri.fsPath);
-        fsWatcher.onDidChange(() => updateWebview());
+    const messageDisposable = webviewPanel.webview.onDidReceiveMessage(async (message) => {
+      if (message.type === 'requestMore') {
+        const state = this.fileStates.get(stateKey);
+        if (!state || state.done) {
+          webviewPanel.webview.postMessage({ type: 'noMore' });
+          return;
+        }
+        try {
+          const chunk = await readCsvChunk(document.uri.fsPath, state.nextOffset, ROWS_PER_CHUNK, state.headers);
+          state.nextOffset = chunk.nextOffset;
+          state.done = chunk.done;
+          state.totalLoaded += chunk.rows.length;
+          webviewPanel.webview.postMessage({
+            type: 'moreRows',
+            rows: chunk.rows,
+            done: chunk.done,
+            totalLoaded: state.totalLoaded,
+          });
+        } catch (err) {
+          webviewPanel.webview.postMessage({ type: 'loadError', message: String(err) });
+        }
+      }
+    });
 
-        webviewPanel.onDidDispose(() => {
-            watcher.dispose();
-            changeListener.dispose();
-            fsWatcher.dispose();
-        });
+    const fsWatcher = vscode.workspace.createFileSystemWatcher(document.uri.fsPath);
+    fsWatcher.onDidChange(() => loadInitial());
+    const changeListener = vscode.workspace.onDidChangeTextDocument((e) => {
+      if (e.document.uri.toString() === stateKey) { loadInitial(); }
+    });
 
-        await updateWebview();
-    }
+    webviewPanel.onDidDispose(() => {
+      this.fileStates.delete(stateKey);
+      fsWatcher.dispose();
+      changeListener.dispose();
+      messageDisposable.dispose();
+    });
 
-    private getHtmlForWebview(
-        webview: vscode.Webview,
-        headers: string[],
-        rows: string[][],
-        uri: vscode.Uri
-    ): string {
-        const fileName = uri.path.split('/').pop() || 'CSV';
-        const nonce = getNonce();
+    await loadInitial();
+  }
 
-        const headerCells = headers
-            .map((h, i) => `<th data-col="${i}" title="${escapeHtml(h)}">${escapeHtml(h)} <span class="sort-icon"></span></th>`)
-            .join('\n            ');
+  private getHtmlForWebview(
+    webview: vscode.Webview,
+    headers: string[],
+    rows: string[][],
+    initiallyDone: boolean,
+    uri: vscode.Uri
+  ): string {
+    const fileName = uri.path.split('/').pop() || 'CSV';
+    const nonce = getNonce();
 
-        const bodyRows = rows
-            .map((row, ri) => {
-                const cells = row
-                    .map((cell) => {
-                        const isNumber = cell !== '' && !isNaN(Number(cell));
-                        return `<td class="${isNumber ? 'num' : ''}" title="${escapeHtml(cell)}">${escapeHtml(cell)}</td>`;
-                    })
-                    .join('');
-                return `<tr>${cells}</tr>`;
-            })
-            .join('\n            ');
+    const headerCells = headers
+      .map((h, i) => `<th data-col="${i}" title="${escapeHtml(h)}">${escapeHtml(h)} <span class="sort-icon"></span></th>`)
+      .join('\n            ');
 
-        return /*html*/ `<!DOCTYPE html>
+    const bodyRows = rows
+      .map((row, ri) => {
+        const cells = row
+          .map((cell) => {
+            const isNumber = cell !== '' && !isNaN(Number(cell));
+            return `<td class="${isNumber ? 'num' : ''}" title="${escapeHtml(cell)}">${escapeHtml(cell)}</td>`;
+          })
+          .join('');
+        return `<tr data-orig-index="${ri}">${cells}</tr>`;
+      })
+      .join('\n            ');
+
+    const initialState = JSON.stringify({ done: initiallyDone, totalLoaded: rows.length });
+
+    return /*html*/ `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -112,7 +147,7 @@ export class CsvTableEditorProvider implements vscode.CustomReadonlyEditorProvid
   <div class="toolbar">
     <div class="toolbar-left">
       <span class="file-name">${escapeHtml(fileName)}</span>
-      <span class="row-count" id="rowCount">${rows.length} rows</span>
+      <span class="row-count" id="rowCount">${rows.length}${!initiallyDone ? '+' : ''} rows</span>
     </div>
     <div class="toolbar-right">
       <div class="search-container">
@@ -122,38 +157,42 @@ export class CsvTableEditorProvider implements vscode.CustomReadonlyEditorProvid
     </div>
   </div>
 
-  <div class="table-wrapper">
+  <div class="table-wrapper" id="tableWrapper">
     <table id="csvTable">
       <thead>
         <tr>
             ${headerCells}
         </tr>
       </thead>
-      <tbody>
+      <tbody id="csvBody">
             ${bodyRows}
       </tbody>
     </table>
+    <div id="scroll-sentinel"></div>
+    <div id="loading-indicator" class="${initiallyDone ? 'hidden' : ''}">
+      <span class="spinner"></span> Loading more rows...
+    </div>
+    <div id="all-loaded" class="${!initiallyDone ? 'hidden' : ''}">
+      ✓ All ${rows.length} rows loaded
+    </div>
   </div>
 
   ${rows.length === 0 ? '<div class="empty-state">No data in this CSV file</div>' : ''}
 
   <script nonce="${nonce}">
+    var __initialState = ${initialState};
     ${this.getScript()}
   </script>
 </body>
 </html>`;
-    }
+  }
 
-    private getStyles(): string {
-        return /*css*/ `
-      * {
-        margin: 0;
-        padding: 0;
-        box-sizing: border-box;
-      }
+  private getStyles(): string {
+    return /*css*/ `
+      * { margin: 0; padding: 0; box-sizing: border-box; }
 
       body {
-        font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
+        font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
         font-size: var(--vscode-font-size, 13px);
         color: var(--vscode-foreground);
         background: var(--vscode-editor-background);
@@ -163,7 +202,6 @@ export class CsvTableEditorProvider implements vscode.CustomReadonlyEditorProvid
         height: 100vh;
       }
 
-      /* Toolbar */
       .toolbar {
         display: flex;
         align-items: center;
@@ -175,12 +213,7 @@ export class CsvTableEditorProvider implements vscode.CustomReadonlyEditorProvid
         gap: 12px;
       }
 
-      .toolbar-left {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        min-width: 0;
-      }
+      .toolbar-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
 
       .file-name {
         font-weight: 600;
@@ -194,24 +227,17 @@ export class CsvTableEditorProvider implements vscode.CustomReadonlyEditorProvid
 
       .row-count {
         font-size: 11px;
-        color: var(--vscode-descriptionForeground, rgba(128,128,128,0.8));
-        white-space: nowrap;
         background: var(--vscode-badge-background, rgba(128,128,128,0.15));
         color: var(--vscode-badge-foreground, var(--vscode-foreground));
         padding: 2px 8px;
         border-radius: 10px;
         font-weight: 500;
+        white-space: nowrap;
       }
 
-      .toolbar-right {
-        flex-shrink: 0;
-      }
+      .toolbar-right { flex-shrink: 0; }
 
-      .search-container {
-        position: relative;
-        display: flex;
-        align-items: center;
-      }
+      .search-container { position: relative; display: flex; align-items: center; }
 
       .search-icon {
         position: absolute;
@@ -237,29 +263,13 @@ export class CsvTableEditorProvider implements vscode.CustomReadonlyEditorProvid
         box-shadow: 0 0 0 1px var(--vscode-focusBorder, #007acc);
       }
 
-      #searchInput::placeholder {
-        color: var(--vscode-input-placeholderForeground, rgba(128,128,128,0.6));
-      }
+      #searchInput::placeholder { color: var(--vscode-input-placeholderForeground, rgba(128,128,128,0.6)); }
 
-      /* Table Wrapper */
-      .table-wrapper {
-        flex: 1;
-        overflow: auto;
-        position: relative;
-      }
+      .table-wrapper { flex: 1; overflow: auto; position: relative; }
 
-      /* Table */
-      table {
-        width: 100%;
-        border-collapse: collapse;
-        table-layout: auto;
-      }
+      table { width: 100%; border-collapse: collapse; table-layout: auto; }
 
-      thead {
-        position: sticky;
-        top: 0;
-        z-index: 2;
-      }
+      thead { position: sticky; top: 0; z-index: 2; }
 
       th {
         background: var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-editor-background));
@@ -279,37 +289,14 @@ export class CsvTableEditorProvider implements vscode.CustomReadonlyEditorProvid
         transition: background 0.1s;
       }
 
-      th:hover {
-        background: var(--vscode-list-hoverBackground, rgba(128,128,128,0.1));
-        opacity: 1;
-      }
+      th:hover { background: var(--vscode-list-hoverBackground, rgba(128,128,128,0.1)); opacity: 1; }
 
-      th .sort-icon {
-        display: inline-block;
-        margin-left: 4px;
-        font-size: 10px;
-        opacity: 0.4;
-      }
-
-      th .sort-icon::after {
-        content: '⇅';
-      }
-
-      th.sort-asc .sort-icon {
-        opacity: 1;
-      }
-
-      th.sort-asc .sort-icon::after {
-        content: '↑';
-      }
-
-      th.sort-desc .sort-icon {
-        opacity: 1;
-      }
-
-      th.sort-desc .sort-icon::after {
-        content: '↓';
-      }
+      th .sort-icon { display: inline-block; margin-left: 4px; font-size: 10px; opacity: 0.4; }
+      th .sort-icon::after { content: '⇅'; }
+      th.sort-asc .sort-icon { opacity: 1; }
+      th.sort-asc .sort-icon::after { content: '↑'; }
+      th.sort-desc .sort-icon { opacity: 1; }
+      th.sort-desc .sort-icon::after { content: '↓'; }
 
       td {
         padding: 6px 14px;
@@ -324,218 +311,253 @@ export class CsvTableEditorProvider implements vscode.CustomReadonlyEditorProvid
       td.num {
         text-align: right;
         font-variant-numeric: tabular-nums;
-        font-family: var(--vscode-editor-font-family, 'SF Mono', 'Menlo', 'Monaco', monospace);
+        font-family: var(--vscode-editor-font-family, 'SF Mono', 'Menlo', monospace);
         font-size: 12px;
       }
 
-      /* Alternating rows */
-      tbody tr:nth-child(even) {
-        background: var(--vscode-list-hoverBackground, rgba(128,128,128,0.04));
-      }
+      tbody tr:nth-child(even) { background: var(--vscode-list-hoverBackground, rgba(128,128,128,0.04)); }
+      tbody tr:hover { background: var(--vscode-list-activeSelectionBackground, rgba(0,122,204,0.1)) !important; }
+      tbody tr.hidden { display: none; }
 
-      tbody tr:hover {
-        background: var(--vscode-list-activeSelectionBackground, rgba(0,122,204,0.1)) !important;
-      }
-
-      tbody tr.hidden {
-        display: none;
-      }
-
-      /* Empty state */
       .empty-state {
-        display: flex;
-        align-items: center;
-        justify-content: center;
+        display: flex; align-items: center; justify-content: center;
         height: 200px;
         color: var(--vscode-descriptionForeground, rgba(128,128,128,0.6));
-        font-size: 14px;
-        font-style: italic;
+        font-size: 14px; font-style: italic;
       }
 
-      /* Scrollbar styling */
-      .table-wrapper::-webkit-scrollbar {
-        width: 10px;
-        height: 10px;
-      }
-
-      .table-wrapper::-webkit-scrollbar-track {
-        background: transparent;
-      }
-
+      .table-wrapper::-webkit-scrollbar { width: 10px; height: 10px; }
+      .table-wrapper::-webkit-scrollbar-track { background: transparent; }
       .table-wrapper::-webkit-scrollbar-thumb {
         background: var(--vscode-scrollbarSlider-background, rgba(128,128,128,0.3));
         border-radius: 5px;
       }
-
       .table-wrapper::-webkit-scrollbar-thumb:hover {
         background: var(--vscode-scrollbarSlider-hoverBackground, rgba(128,128,128,0.5));
       }
 
-      /* Highlight matched text */
       mark {
         background: var(--vscode-editor-findMatchHighlightBackground, rgba(234,184,57,0.4));
-        color: inherit;
-        border-radius: 2px;
-        padding: 0 1px;
+        color: inherit; border-radius: 2px; padding: 0 1px;
       }
-    `;
-    }
 
-    private getScript(): string {
-        return /*javascript*/ `
+      #scroll-sentinel { height: 1px; }
+
+      #loading-indicator {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 16px;
+        gap: 8px;
+        color: var(--vscode-descriptionForeground, rgba(128,128,128,0.7));
+        font-size: 12px;
+      }
+
+      .hidden { display: none !important; }
+
+      #all-loaded {
+        text-align: center;
+        padding: 8px;
+        color: var(--vscode-descriptionForeground, rgba(128,128,128,0.5));
+        font-size: 11px;
+      }
+
+      .spinner {
+        width: 14px; height: 14px;
+        border: 2px solid var(--vscode-progressBar-background, #007acc);
+        border-top-color: transparent;
+        border-radius: 50%;
+        display: inline-block;
+        animation: spin 0.8s linear infinite;
+      }
+
+      @keyframes spin { to { transform: rotate(360deg); } }
+    `;
+  }
+
+  private getScript(): string {
+    return /*javascript*/ `
       (function() {
+        const vscode = acquireVsCodeApi();
         const table = document.getElementById('csvTable');
-        const tbody = table.querySelector('tbody');
+        const tbody = document.getElementById('csvBody');
+        const tableWrapper = document.getElementById('tableWrapper');
         const searchInput = document.getElementById('searchInput');
         const rowCountEl = document.getElementById('rowCount');
-        const headers = table.querySelectorAll('th');
-        const totalRows = tbody.querySelectorAll('tr').length;
+        const sentinel = document.getElementById('scroll-sentinel');
+        const loadingEl = document.getElementById('loading-indicator');
+        const allLoadedEl = document.getElementById('all-loaded');
+        const ths = table.querySelectorAll('th');
 
+        let totalLoaded = __initialState.totalLoaded;
+        let isDone = __initialState.done;
+        let isLoading = false;
         let currentSort = { col: -1, dir: 'none' };
+        let currentQuery = '';
 
-        // Sorting
-        headers.forEach((th) => {
+        // ─── Sorting ───────────────────────────────────────────────
+        ths.forEach((th) => {
           th.addEventListener('click', () => {
             const col = parseInt(th.dataset.col);
-
-            // Clear other headers
-            headers.forEach(h => {
-              h.classList.remove('sort-asc', 'sort-desc');
-            });
-
+            ths.forEach(h => h.classList.remove('sort-asc', 'sort-desc'));
             if (currentSort.col === col) {
               if (currentSort.dir === 'asc') {
                 currentSort.dir = 'desc';
                 th.classList.add('sort-desc');
               } else if (currentSort.dir === 'desc') {
                 currentSort = { col: -1, dir: 'none' };
-                // Reset to original order
-                sortTable(col, 'none');
-                return;
+                sortTable(col, 'none'); return;
               }
             } else {
               currentSort = { col, dir: 'asc' };
               th.classList.add('sort-asc');
             }
-
             sortTable(col, currentSort.dir);
           });
         });
 
         function sortTable(col, dir) {
           const rows = Array.from(tbody.querySelectorAll('tr'));
-
           if (dir === 'none') {
-            // Restore original order by row index
-            rows.sort((a, b) => {
-              return (parseInt(a.dataset.origIndex) || 0) - (parseInt(b.dataset.origIndex) || 0);
-            });
+            rows.sort((a, b) => (parseInt(a.dataset.origIndex)||0) - (parseInt(b.dataset.origIndex)||0));
           } else {
             rows.sort((a, b) => {
               const aVal = a.children[col]?.textContent || '';
               const bVal = b.children[col]?.textContent || '';
-
-              // Try numeric comparison
-              const aNum = parseFloat(aVal);
-              const bNum = parseFloat(bVal);
-
-              if (!isNaN(aNum) && !isNaN(bNum)) {
-                return dir === 'asc' ? aNum - bNum : bNum - aNum;
-              }
-
-              // String comparison
-              return dir === 'asc'
-                ? aVal.localeCompare(bVal)
-                : bVal.localeCompare(aVal);
+              const aNum = parseFloat(aVal), bNum = parseFloat(bVal);
+              if (!isNaN(aNum) && !isNaN(bNum)) return dir === 'asc' ? aNum - bNum : bNum - aNum;
+              return dir === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
             });
           }
-
           rows.forEach(row => tbody.appendChild(row));
         }
 
-        // Store original indices
-        tbody.querySelectorAll('tr').forEach((row, i) => {
-          row.dataset.origIndex = i.toString();
-        });
+        tbody.querySelectorAll('tr').forEach((row, i) => { row.dataset.origIndex = i.toString(); });
 
-        // Search / Filter
+        // ─── Search / Filter ────────────────────────────────────────
         searchInput.addEventListener('input', () => {
-          const query = searchInput.value.toLowerCase().trim();
+          currentQuery = searchInput.value.toLowerCase().trim();
           const rows = tbody.querySelectorAll('tr');
-          let visibleCount = 0;
-
+          let visible = 0;
           rows.forEach(row => {
             const cells = row.querySelectorAll('td');
             let match = false;
-
             cells.forEach(cell => {
-              const originalText = cell.getAttribute('title') || cell.textContent || '';
-              if (query === '') {
-                cell.textContent = originalText;
-              } else if (originalText.toLowerCase().includes(query)) {
+              const orig = cell.getAttribute('title') || '';
+              if (!currentQuery) {
+                cell.textContent = orig;
+              } else if (orig.toLowerCase().includes(currentQuery)) {
                 match = true;
-                // Highlight matching text
-                const idx = originalText.toLowerCase().indexOf(query);
-                const before = originalText.substring(0, idx);
-                const matched = originalText.substring(idx, idx + query.length);
-                const after = originalText.substring(idx + query.length);
-                cell.innerHTML = escapeHtml(before) + '<mark>' + escapeHtml(matched) + '</mark>' + escapeHtml(after);
+                const idx = orig.toLowerCase().indexOf(currentQuery);
+                cell.innerHTML = esc(orig.slice(0, idx)) + '<mark>' + esc(orig.slice(idx, idx + currentQuery.length)) + '</mark>' + esc(orig.slice(idx + currentQuery.length));
               } else {
-                cell.textContent = originalText;
+                cell.textContent = orig;
               }
             });
-
-            if (query === '') {
-              row.classList.remove('hidden');
-              visibleCount++;
-            } else if (match) {
-              row.classList.remove('hidden');
-              visibleCount++;
-            } else {
-              row.classList.add('hidden');
-            }
+            if (!currentQuery || match) { row.classList.remove('hidden'); visible++; }
+            else { row.classList.add('hidden'); }
           });
+          rowCountEl.textContent = currentQuery
+            ? (visible + ' of ' + totalLoaded + (isDone ? '' : '+') + ' rows')
+            : (totalLoaded + (isDone ? '' : '+') + ' rows');
+        });
 
-          if (query === '') {
-            rowCountEl.textContent = totalRows + ' rows';
-          } else {
-            rowCountEl.textContent = visibleCount + ' of ' + totalRows + ' rows';
+        function esc(text) {
+          const d = document.createElement('div'); d.textContent = text; return d.innerHTML;
+        }
+
+        // ─── Keyboard shortcut ──────────────────────────────────────
+        document.addEventListener('keydown', (e) => {
+          if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+            e.preventDefault(); searchInput.focus(); searchInput.select();
           }
         });
 
-        function escapeHtml(text) {
-          const div = document.createElement('div');
-          div.textContent = text;
-          return div.innerHTML;
+        // ─── Append new rows from extension ────────────────────────
+        function appendRows(newRows) {
+          const baseIdx = totalLoaded;
+          const fragment = document.createDocumentFragment();
+          newRows.forEach((row, i) => {
+            const tr = document.createElement('tr');
+            tr.dataset.origIndex = (baseIdx + i).toString();
+            row.forEach((cell) => {
+              const td = document.createElement('td');
+              const isNum = cell !== '' && !isNaN(Number(cell));
+              if (isNum) { td.classList.add('num'); }
+              td.title = cell;
+              // Apply current search filter immediately
+              if (currentQuery && cell.toLowerCase().includes(currentQuery)) {
+                const idx = cell.toLowerCase().indexOf(currentQuery);
+                td.innerHTML = esc(cell.slice(0, idx)) + '<mark>' + esc(cell.slice(idx, idx + currentQuery.length)) + '</mark>' + esc(cell.slice(idx + currentQuery.length));
+                tr.classList.remove('hidden');
+              } else if (currentQuery) {
+                td.textContent = cell;
+                tr.classList.add('hidden');
+              } else {
+                td.textContent = cell;
+              }
+              tr.appendChild(td);
+            });
+            fragment.appendChild(tr);
+          });
+          tbody.appendChild(fragment);
         }
 
-        // Focus search on Ctrl/Cmd+F
-        document.addEventListener('keydown', (e) => {
-          if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
-            e.preventDefault();
-            searchInput.focus();
-            searchInput.select();
+        // ─── Infinite scroll via IntersectionObserver ───────────────
+        function loadMore() {
+          if (isLoading || isDone) { return; }
+          isLoading = true;
+          loadingEl.classList.remove('hidden');
+          vscode.postMessage({ type: 'requestMore' });
+        }
+
+        const observer = new IntersectionObserver((entries) => {
+          if (entries[0].isIntersecting && !isLoading && !isDone) { loadMore(); }
+        }, { root: tableWrapper, rootMargin: '400px' });
+
+        if (!isDone) { observer.observe(sentinel); }
+
+        // ─── Handle messages from extension ────────────────────────
+        window.addEventListener('message', (event) => {
+          const msg = event.data;
+          if (msg.type === 'moreRows') {
+            appendRows(msg.rows);
+            totalLoaded = msg.totalLoaded;
+            isDone = msg.done;
+            isLoading = false;
+            loadingEl.classList.add('hidden');
+            rowCountEl.textContent = totalLoaded + (isDone ? '' : '+') + ' rows';
+            if (isDone) {
+              allLoadedEl.textContent = '✓ All ' + totalLoaded + ' rows loaded';
+              allLoadedEl.classList.remove('hidden');
+              observer.disconnect();
+            }
+          } else if (msg.type === 'noMore') {
+            isDone = true; isLoading = false;
+            loadingEl.classList.add('hidden');
+            allLoadedEl.classList.remove('hidden');
+            observer.disconnect();
           }
         });
       })();
     `;
-    }
+  }
 }
 
 function escapeHtml(text: string): string {
-    return text
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 }
 
 function getNonce(): string {
-    let text = '';
-    const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    for (let i = 0; i < 32; i++) {
-        text += possible.charAt(Math.floor(Math.random() * possible.length));
-    }
-    return text;
+  let text = '';
+  const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  for (let i = 0; i < 32; i++) {
+    text += possible.charAt(Math.floor(Math.random() * possible.length));
+  }
+  return text;
 }
