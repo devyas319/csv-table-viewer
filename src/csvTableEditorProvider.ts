@@ -292,6 +292,11 @@ export class CsvTableEditorProvider implements vscode.CustomReadonlyEditorProvid
         white-space: nowrap;
         position: relative;
         transition: background 0.1s;
+        border-right: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.12));
+      }
+
+      .header-row th:last-child {
+        border-right: none;
       }
 
       .header-row th:hover { background: var(--vscode-list-hoverBackground, rgba(128,128,128,0.1)); opacity: 1; }
@@ -299,6 +304,11 @@ export class CsvTableEditorProvider implements vscode.CustomReadonlyEditorProvid
       .filters-row th {
         padding: 4px 10px 8px 10px;
         border-bottom: 2px solid var(--vscode-focusBorder, #007acc);
+        border-right: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.12));
+      }
+
+      .filters-row th:last-child {
+        border-right: none;
       }
 
       .col-filter {
@@ -327,11 +337,16 @@ export class CsvTableEditorProvider implements vscode.CustomReadonlyEditorProvid
       td {
         padding: 6px 14px;
         border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.12));
+        border-right: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.12));
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
         max-width: 400px;
         transition: background 0.08s;
+      }
+
+      td:last-child {
+        border-right: none;
       }
 
       td.num {
