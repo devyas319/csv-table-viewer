@@ -47,23 +47,50 @@ export function readCsvChunk(
 
         stream.on('data', (chunk: Buffer) => {
             bytesBuf = Buffer.concat([bytesBuf, chunk]);
+
             while (true) {
-                const nlIdx = bytesBuf.indexOf(0x0a);
-                if (nlIdx === -1) { break; }
-                const lineEnd = nlIdx > 0 && bytesBuf[nlIdx - 1] === 0x0d ? nlIdx - 1 : nlIdx;
+                let inQuotes = false;
+                let lineEnd = -1;
+                let consumeLen = 0;
+
+                for (let i = 0; i < bytesBuf.length; i++) {
+                    const b = bytesBuf[i];
+                    if (b === 0x22) { // '"'
+                        inQuotes = !inQuotes;
+                    } else if (!inQuotes && (b === 0x0a || b === 0x0d)) {
+                        lineEnd = i;
+                        if (b === 0x0d) { // '\r'
+                            if (i + 1 < bytesBuf.length) {
+                                consumeLen = (bytesBuf[i + 1] === 0x0a) ? i + 2 : i + 1; // skip \n
+                            } else {
+                                lineEnd = -1; // Wait for next chunk to see if \n follows
+                            }
+                        } else {
+                            consumeLen = i + 1;
+                        }
+                        if (lineEnd !== -1) { break; }
+                    }
+                }
+
+                if (lineEnd === -1) { break; } // Need more data
+
                 const lineBytes = bytesBuf.slice(0, lineEnd);
-                bytesConsumed += nlIdx + 1;
-                bytesBuf = bytesBuf.slice(nlIdx + 1);
+                bytesConsumed += consumeLen;
+                bytesBuf = bytesBuf.slice(consumeLen);
+
                 const line = lineBytes.toString('utf-8').trim();
                 if (!line) { continue; }
+
                 if (needHeaders) {
                     headers = parseCsvLine(line);
                     needHeaders = false;
                     continue;
                 }
+
                 const row = parseCsvLine(line);
                 while (row.length < headers.length) { row.push(''); }
                 rows.push(row.slice(0, headers.length));
+
                 if (rows.length >= maxRows) { settle(false); return; }
             }
         });

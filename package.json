@@ -57,12 +57,18 @@
     "watch": "tsc -watch -p ./",
     "package": "vsce package",
     "publish:vsce": "vsce publish",
-    "publish:ovsx": "ovsx publish"
+    "publish:ovsx": "ovsx publish",
+    "test": "ts-mocha src/**/*.test.ts"
   },
   "devDependencies": {
-    "@types/vscode": "^1.80.0",
+    "@types/chai": "^4.3.20",
+    "@types/mocha": "^10.0.10",
     "@types/node": "^18.0.0",
-    "typescript": "^5.3.0",
-    "@vscode/vsce": "^2.22.0"
+    "@types/vscode": "^1.80.0",
+    "@vscode/vsce": "^2.22.0",
+    "chai": "^4.5.0",
+    "mocha": "^11.7.5",
+    "ts-mocha": "^11.1.0",
+    "typescript": "^5.3.0"
   }
 }
