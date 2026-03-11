@@ -1,7 +1,7 @@
 # CSV Table Viewer
 
-[![VS Marketplace](https://img.shields.io/visual-studio-marketplace/v/devyas319.csv-table-viewer?label=VS%20Marketplace&color=007acc)](https://marketplace.visualstudio.com/items?itemName=devyas319.csv-table-viewer)
-[![Open VSX](https://img.shields.io/open-vsx/v/devyas319/csv-table-viewer?label=Open%20VSX&color=a855f7)](https://open-vsx.org/extension/devyas319/csv-table-viewer)
+[![VS Marketplace](https://img.shields.io/visual-studio-marketplace/v/devyas319.csv-interactive-table-viewer?label=VS%20Marketplace&color=007acc)](https://marketplace.visualstudio.com/items?itemName=devyas319.csv-interactive-table-viewer)
+[![Open VSX](https://img.shields.io/open-vsx/v/devyas319/csv-interactive-table-viewer?label=Open%20VSX&color=a855f7)](https://open-vsx.org/extension/devyas319/csv-interactive-table-viewer)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 > View CSV files as beautiful, interactive tables inside VS Code.
