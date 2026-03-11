@@ -1,0 +1,68 @@
+{
+  "name": "csv-table-viewer",
+  "displayName": "CSV Table Viewer",
+  "description": "View CSV files as beautiful, interactive tables with sorting, filtering, and theme support",
+  "version": "0.1.0",
+  "publisher": "devyas319",
+  "author": {
+    "name": "devyas319"
+  },
+  "license": "MIT",
+  "icon": "icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/devyas319/csv-table-viewer"
+  },
+  "bugs": {
+    "url": "https://github.com/devyas319/csv-table-viewer/issues"
+  },
+  "homepage": "https://github.com/devyas319/csv-table-viewer#readme",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "csv",
+    "table",
+    "viewer",
+    "data",
+    "spreadsheet"
+  ],
+  "galleryBanner": {
+    "color": "#1e1e2e",
+    "theme": "dark"
+  },
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "csvTableViewer.view",
+        "displayName": "CSV Table Viewer",
+        "selector": [
+          {
+            "filenamePattern": "*.csv"
+          }
+        ],
+        "priority": "default"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package",
+    "publish:vsce": "vsce publish",
+    "publish:ovsx": "ovsx publish"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.80.0",
+    "@types/node": "^18.0.0",
+    "typescript": "^5.3.0",
+    "@vscode/vsce": "^2.22.0"
+  }
+}

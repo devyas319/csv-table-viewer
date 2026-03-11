@@ -1,0 +1,62 @@
+name: Publish Extension
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      publish_target:
+        description: 'Publish target'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+          - both
+          - vsce
+          - ovsx
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile
+        run: npm run compile
+
+      - name: Package extension
+        run: npx @vscode/vsce package -o csv-table-viewer.vsix
+
+      - name: Publish to VS Code Marketplace
+        if: >
+          github.event_name == 'release' ||
+          github.event.inputs.publish_target == 'both' ||
+          github.event.inputs.publish_target == 'vsce'
+        run: npx @vscode/vsce publish --packagePath csv-table-viewer.vsix
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
+      - name: Publish to Open VSX
+        if: >
+          github.event_name == 'release' ||
+          github.event.inputs.publish_target == 'both' ||
+          github.event.inputs.publish_target == 'ovsx'
+        run: npx ovsx publish csv-table-viewer.vsix -p ${{ secrets.OVSX_PAT }}
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: csv-table-viewer-vsix
+          path: csv-table-viewer.vsix
