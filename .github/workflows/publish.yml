@@ -1,5 +1,8 @@
 name: Publish Extension
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 on:
   release:
     types: [published]
@@ -34,14 +37,26 @@ jobs:
       - name: Compile
         run: npm run compile
 
-      - name: Package extension
-        run: npx @vscode/vsce package -o csv-table-viewer.vsix
+      - name: Package Open VSX extension
+        run: npx @vscode/vsce package -o ovsx-csv-table-viewer.vsix
 
-      - name: Upload VSIX artifact
+      - name: Rename for VS Code Marketplace
+        run: npm pkg set name=devyas319-csv-table-viewer
+
+      - name: Package VS Code extension
+        run: npx @vscode/vsce package -o vsce-csv-table-viewer.vsix
+
+      - name: Upload OVSX artifact
         uses: actions/upload-artifact@v4
         with:
-          name: csv-table-viewer-vsix
-          path: csv-table-viewer.vsix
+          name: ovsx-vsix
+          path: ovsx-csv-table-viewer.vsix
+
+      - name: Upload VSCE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vsce-vsix
+          path: vsce-csv-table-viewer.vsix
 
   publish-vsce:
     needs: build
@@ -51,13 +66,13 @@ jobs:
       github.event.inputs.publish_target == 'both' ||
       github.event.inputs.publish_target == 'vsce'
     steps:
-      - name: Download VSIX
+      - name: Download VSCE VSIX
         uses: actions/download-artifact@v4
         with:
-          name: csv-table-viewer-vsix
+          name: vsce-vsix
 
       - name: Publish to VS Code Marketplace
-        run: npx @vscode/vsce publish --packagePath csv-table-viewer.vsix
+        run: npx @vscode/vsce publish --packagePath vsce-csv-table-viewer.vsix
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
 
@@ -69,10 +84,10 @@ jobs:
       github.event.inputs.publish_target == 'both' ||
       github.event.inputs.publish_target == 'ovsx'
     steps:
-      - name: Download VSIX
+      - name: Download OVSX VSIX
         uses: actions/download-artifact@v4
         with:
-          name: csv-table-viewer-vsix
+          name: ovsx-vsix
 
       - name: Publish to Open VSX
-        run: npx ovsx publish csv-table-viewer.vsix -p ${{ secrets.OVSX_PAT }}
+        run: npx ovsx publish ovsx-csv-table-viewer.vsix -p ${{ secrets.OVSX_PAT }}
