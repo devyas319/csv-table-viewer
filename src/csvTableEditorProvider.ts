@@ -118,6 +118,10 @@ export class CsvTableEditorProvider implements vscode.CustomReadonlyEditorProvid
       .map((h, i) => `<th data-col="${i}" title="${escapeHtml(h)}">${escapeHtml(h)} <span class="sort-icon"></span></th>`)
       .join('\n            ');
 
+    const filterCells = headers
+      .map((h, i) => `<th><input type="text" class="col-filter" data-col="${i}" placeholder="Filter..." autocomplete="off" /></th>`)
+      .join('\n            ');
+
     const bodyRows = rows
       .map((row, ri) => {
         const cells = row
@@ -160,8 +164,11 @@ export class CsvTableEditorProvider implements vscode.CustomReadonlyEditorProvid
   <div class="table-wrapper" id="tableWrapper">
     <table id="csvTable">
       <thead>
-        <tr>
+        <tr class="header-row">
             ${headerCells}
+        </tr>
+        <tr class="filters-row">
+            ${filterCells}
         </tr>
       </thead>
       <tbody id="csvBody">
@@ -269,12 +276,10 @@ export class CsvTableEditorProvider implements vscode.CustomReadonlyEditorProvid
 
       table { width: 100%; border-collapse: collapse; table-layout: auto; }
 
-      thead { position: sticky; top: 0; z-index: 2; }
+      thead { position: sticky; top: 0; z-index: 2; background: var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-editor-background)); }
 
-      th {
-        background: var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-editor-background));
-        border-bottom: 2px solid var(--vscode-focusBorder, #007acc);
-        padding: 8px 14px;
+      .header-row th {
+        padding: 8px 14px 4px 14px;
         text-align: left;
         font-weight: 600;
         font-size: 11px;
@@ -289,7 +294,28 @@ export class CsvTableEditorProvider implements vscode.CustomReadonlyEditorProvid
         transition: background 0.1s;
       }
 
-      th:hover { background: var(--vscode-list-hoverBackground, rgba(128,128,128,0.1)); opacity: 1; }
+      .header-row th:hover { background: var(--vscode-list-hoverBackground, rgba(128,128,128,0.1)); opacity: 1; }
+
+      .filters-row th {
+        padding: 4px 10px 8px 10px;
+        border-bottom: 2px solid var(--vscode-focusBorder, #007acc);
+      }
+
+      .col-filter {
+        width: 100%;
+        min-width: 60px;
+        padding: 3px 6px;
+        border: 1px solid var(--vscode-input-border, rgba(128,128,128,0.3));
+        border-radius: 3px;
+        background: var(--vscode-input-background, rgba(0,0,0,0.1));
+        color: var(--vscode-input-foreground, var(--vscode-foreground));
+        font-size: 11px;
+        outline: none;
+      }
+      .col-filter:focus {
+        border-color: var(--vscode-focusBorder, #007acc);
+      }
+      .col-filter::placeholder { color: var(--vscode-input-placeholderForeground, rgba(128,128,128,0.6)); }
 
       th .sort-icon { display: inline-block; margin-left: 4px; font-size: 10px; opacity: 0.4; }
       th .sort-icon::after { content: '⇅'; }
@@ -394,6 +420,18 @@ export class CsvTableEditorProvider implements vscode.CustomReadonlyEditorProvid
         let isLoading = false;
         let currentSort = { col: -1, dir: 'none' };
         let currentQuery = '';
+        let colQueries = {}; // { colIndex: 'query' }
+
+        const colFilters = document.querySelectorAll('.col-filter');
+        colFilters.forEach(inp => {
+          inp.addEventListener('input', (e) => {
+            const colIdx = e.target.getAttribute('data-col');
+            const val = e.target.value.toLowerCase().trim();
+            if (val) colQueries[colIdx] = val;
+            else delete colQueries[colIdx];
+            applyFilters();
+          });
+        });
 
         // ─── Sorting ───────────────────────────────────────────────
         ths.forEach((th) => {
@@ -437,30 +475,55 @@ export class CsvTableEditorProvider implements vscode.CustomReadonlyEditorProvid
         // ─── Search / Filter ────────────────────────────────────────
         searchInput.addEventListener('input', () => {
           currentQuery = searchInput.value.toLowerCase().trim();
+          applyFilters();
+        });
+
+        function applyFilters() {
           const rows = tbody.querySelectorAll('tr');
           let visible = 0;
+          const hasColFilters = Object.keys(colQueries).length > 0;
+
           rows.forEach(row => {
             const cells = row.querySelectorAll('td');
-            let match = false;
-            cells.forEach(cell => {
+            let globalMatch = !currentQuery; 
+            let colMatch = true;
+
+            cells.forEach((cell, idx) => {
               const orig = cell.getAttribute('title') || '';
+              const origLower = orig.toLowerCase();
+              
+              // Column-specific filter check
+              if (colMatch && hasColFilters && colQueries[idx] !== undefined) {
+                if (!origLower.includes(colQueries[idx])) {
+                  colMatch = false;
+                }
+              }
+
+              // Global search check and highlighting
               if (!currentQuery) {
                 cell.textContent = orig;
-              } else if (orig.toLowerCase().includes(currentQuery)) {
-                match = true;
-                const idx = orig.toLowerCase().indexOf(currentQuery);
-                cell.innerHTML = esc(orig.slice(0, idx)) + '<mark>' + esc(orig.slice(idx, idx + currentQuery.length)) + '</mark>' + esc(orig.slice(idx + currentQuery.length));
+              } else if (origLower.includes(currentQuery)) {
+                globalMatch = true;
+                const i = origLower.indexOf(currentQuery);
+                cell.innerHTML = esc(orig.slice(0, i)) + '<mark>' + esc(orig.slice(i, i + currentQuery.length)) + '</mark>' + esc(orig.slice(i + currentQuery.length));
               } else {
                 cell.textContent = orig;
               }
             });
-            if (!currentQuery || match) { row.classList.remove('hidden'); visible++; }
-            else { row.classList.add('hidden'); }
+
+            if (globalMatch && colMatch) { 
+              row.classList.remove('hidden'); 
+              visible++; 
+            } else { 
+              row.classList.add('hidden'); 
+            }
           });
-          rowCountEl.textContent = currentQuery
+
+          const activeCount = currentQuery || hasColFilters;
+          rowCountEl.textContent = activeCount
             ? (visible + ' of ' + totalLoaded + (isDone ? '' : '+') + ' rows')
             : (totalLoaded + (isDone ? '' : '+') + ' rows');
-        });
+        }
 
         function esc(text) {
           const d = document.createElement('div'); d.textContent = text; return d.innerHTML;
@@ -485,22 +548,24 @@ export class CsvTableEditorProvider implements vscode.CustomReadonlyEditorProvid
               const isNum = cell !== '' && !isNaN(Number(cell));
               if (isNum) { td.classList.add('num'); }
               td.title = cell;
-              // Apply current search filter immediately
-              if (currentQuery && cell.toLowerCase().includes(currentQuery)) {
-                const idx = cell.toLowerCase().indexOf(currentQuery);
-                td.innerHTML = esc(cell.slice(0, idx)) + '<mark>' + esc(cell.slice(idx, idx + currentQuery.length)) + '</mark>' + esc(cell.slice(idx + currentQuery.length));
-                tr.classList.remove('hidden');
-              } else if (currentQuery) {
-                td.textContent = cell;
-                tr.classList.add('hidden');
+              const orig = cell;
+              const origLower = orig.toLowerCase();
+              
+              // Determine if it matches global query (we apply highlights only for global query in this logic)
+              if (currentQuery && origLower.includes(currentQuery)) {
+                const idx = origLower.indexOf(currentQuery);
+                td.innerHTML = esc(orig.slice(0, idx)) + '<mark>' + esc(orig.slice(idx, idx + currentQuery.length)) + '</mark>' + esc(orig.slice(idx + currentQuery.length));
               } else {
-                td.textContent = cell;
+                td.textContent = orig;
               }
+
               tr.appendChild(td);
             });
             fragment.appendChild(tr);
           });
           tbody.appendChild(fragment);
+          // Re-evaluate filters on the newly appended rows (or all rows)
+          applyFilters();
         }
 
         // ─── Infinite scroll via IntersectionObserver ───────────────
